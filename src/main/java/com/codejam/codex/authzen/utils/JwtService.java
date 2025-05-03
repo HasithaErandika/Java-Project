@@ -50,8 +50,15 @@ public class JwtService {
     }
 
     public boolean isTokenValid(String token, UserResponse userDetails) {
-        final String username = extractUsername(token);
-        return username != null && username.equals(userDetails.getUsername()) && !isTokenExpired(token);
+        try {
+            if (isTokenBlacklisted(token)) {
+                return false;
+            }
+            final String username = extractUsername(token);
+            return username != null && username.equals(userDetails.getUsername()) && !isTokenExpired(token);
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
     }
 
     public boolean isTokenValid(String token) {
@@ -76,7 +83,10 @@ public class JwtService {
     }
 
     public String generateRefreshToken(UserResponse userDetails) {
-        return buildToken(new HashMap<>(), userDetails.getUsername(), refreshTokenExpiry);
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("userId", userDetails.getId());
+        claims.put("username", userDetails.getUsername());
+        return buildToken(claims, userDetails.getUsername(), refreshTokenExpiry);
     }
 
     private String buildToken(Map<String, Object> claims, String subject, long expiry) {
@@ -90,7 +100,11 @@ public class JwtService {
     }
 
     boolean isTokenExpired(String token) {
-        return extractExpiration(token).before(new Date());
+        try {
+            return extractExpiration(token).before(new Date());
+        } catch (JwtException | IllegalArgumentException e) {
+            return true;
+        }
     }
 
     private Claims extractAllClaims(String token) {
@@ -110,16 +124,18 @@ public class JwtService {
                 return (List<String>) permissionsObj;
             }
             return new ArrayList<>();
-        } catch (Exception e) {
+        } catch (JwtException | IllegalArgumentException e) {
             return new ArrayList<>();
         }
     }
 
     public boolean isTokenBlacklisted(String token) {
-        return blacklistedTokens.contains(token);
+        return token != null && blacklistedTokens.contains(token);
     }
 
     public void blacklistToken(String token) {
-        blacklistedTokens.add(token);
+        if (token != null) {
+            blacklistedTokens.add(token);
+        }
     }
 }

@@ -409,27 +409,28 @@ public class AuthService {
      * @return true if email was sent successfully, false otherwise.
      */
     public boolean sendPasswordResetEmail(ResetRequest request) {
-        Optional<User> userOptional = userRepository.findByEmail(request.getEmail());
-        if (userOptional.isPresent()) {
-            User user = userOptional.get();
+        try {
+            User user = userRepository.findByEmail(request.getEmail())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
 
-            EmailToken token = EmailToken.builder()
-                    .user(user)
-                    .token(UUID.randomUUID().toString())
-                    .purpose("RESET_PASSWORD")
-                    .expiresAt(Timestamp.from(Instant.now().plus(15, ChronoUnit.MINUTES)))
-                    .build();
+            // Create reset token
+            String resetToken = UUID.randomUUID().toString();
+            EmailToken emailToken = new EmailToken();
+            emailToken.setToken(resetToken);
+            emailToken.setUser(user);
+            emailToken.setPurpose("PASSWORD_RESET");
+            emailToken.setExpiresAt(Timestamp.from(Instant.now().plus(15, ChronoUnit.MINUTES)));
+            emailTokenRepository.save(emailToken);
 
-            emailTokenRepository.save(token);
-
-            String resetLink = "http://localhost:8080/reset-password/reset-password.html?token=" + token.getToken();
-
+            // Send email
+            String resetLink = "http://localhost:8080/reset-password?token=" + resetToken;
             String subject = "Password Reset Request";
-            String body = "You have requested to reset your password. Click the link below to reset your password:\n" + resetLink;
-
-            return emailUtil.sendPasswordResetEmail(request.getEmail(), subject, body, resetLink);
+            String body = "Click the following link to reset your password: ${RESET_LINK}";
+            
+            return emailUtil.sendPasswordResetEmail(user.getEmail(), subject, body, resetLink);
+        } catch (Exception e) {
+            return false;
         }
-        return false;
     }
 
     /**
@@ -439,35 +440,35 @@ public class AuthService {
      * @return true if the password was successfully reset, false otherwise.
      */
     public boolean resetUserPassword(ResetPasswordRequest request) {
-        Optional<EmailToken> tokenOptional = emailTokenRepository.findByToken(request.getToken());
-        if (tokenOptional.isPresent()) {
-            EmailToken token = tokenOptional.get();
+        try {
+            // Find email token
+            EmailToken emailToken = emailTokenRepository.findByToken(request.getToken())
+                    .orElseThrow(() -> new RuntimeException("Invalid reset token"));
 
-            if (token.getExpiresAt().before(Timestamp.from(Instant.now()))) {
-                return false;
+            // Check if token is expired
+            if (emailToken.getExpiresAt().before(Timestamp.from(Instant.now()))) {
+                emailTokenRepository.delete(emailToken);
+                throw new RuntimeException("Reset token has expired");
             }
 
-            if (!"RESET_PASSWORD".equals(token.getPurpose())) {
-                return false;
+            // Check if token is for password reset
+            if (!"PASSWORD_RESET".equals(emailToken.getPurpose())) {
+                throw new RuntimeException("Invalid token purpose");
             }
 
-            Optional<User> userOptional = userRepository.findByEmail(request.getEmail());
-            if (userOptional.isPresent()) {
-                User user = userOptional.get();
+            // Update user password
+            User user = emailToken.getUser();
+            user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+            user.setPasswordChangedAt(Timestamp.from(Instant.now()));
+            userRepository.save(user);
 
-                if (!user.equals(token.getUser())) {
-                    return false;
-                }
+            // Delete used token
+            emailTokenRepository.delete(emailToken);
 
-                user.setPassword(passwordEncoder.encode(request.getNewPassword()));
-                userRepository.save(user);
-
-                emailTokenRepository.delete(token);
-
-                return true;
-            }
+            return true;
+        } catch (Exception e) {
+            return false;
         }
-        return false;
     }
 
     /**
@@ -559,52 +560,40 @@ public class AuthService {
      * @throws RuntimeException if the refresh token is expired or invalid.
      */
     public TokenResponse refreshToken(String refreshToken) {
-        if (refreshToken == null || refreshToken.isEmpty()) {
-            throw new RuntimeException("Refresh token is required");
+        try {
+            // Validate refresh token
+            if (!jwtService.isTokenValid(refreshToken)) {
+                throw new RuntimeException("Invalid refresh token");
+            }
+
+            // Extract username from token
+            String username = jwtService.extractUsername(refreshToken);
+            if (username == null) {
+                throw new RuntimeException("Invalid refresh token");
+            }
+
+            // Get user details
+            UserResponse userResponse = userService.loadUserByUsername(username);
+            if (userResponse == null) {
+                throw new RuntimeException("User not found");
+            }
+
+            // Generate new tokens
+            String newAccessToken = jwtService.generateAccessToken(userResponse);
+            String newRefreshToken = jwtService.generateRefreshToken(userResponse);
+
+            // Save new refresh token
+            User user = userRepository.findByEmail(userResponse.getEmail())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+            saveRefreshToken(user, newRefreshToken);
+
+            return TokenResponse.builder()
+                    .accessToken(newAccessToken)
+                    .refreshToken(newRefreshToken)
+                    .build();
+        } catch (Exception e) {
+            return null;
         }
-
-        // Validate token format and signature
-        if (!jwtService.isTokenValid(refreshToken)) {
-            throw new RuntimeException("Invalid refresh token format or signature");
-        }
-
-        Optional<RefreshToken> tokenOptional = refreshTokenRepository.findByToken(refreshToken);
-        if (tokenOptional.isEmpty()) {
-            throw new RuntimeException("Refresh token not found in database");
-        }
-
-        RefreshToken token = tokenOptional.get();
-        if (token.getExpiresAt().before(Timestamp.from(Instant.now()))) {
-            refreshTokenRepository.delete(token);
-            throw new RuntimeException("Refresh token has expired");
-        }
-
-        User user = token.getUser();
-        if (!user.isActive()) {
-            throw new RuntimeException("User account is not active");
-        }
-
-        if (user.isLocked()) {
-            throw new RuntimeException("User account is locked");
-        }
-
-        UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
-        if (userResponse == null) {
-            throw new RuntimeException("Failed to load user details");
-        }
-
-        List<String> permissionNames = userRepository.findPermissionNamesByUsername(user.getUsername());
-        userResponse.setPermissions(permissionNames);
-
-        String newAccessToken = jwtService.generateAccessToken(userResponse);
-        String newRefreshToken = jwtService.generateRefreshToken(userResponse);
-
-        // Delete old refresh token
-        refreshTokenRepository.delete(token);
-        // Save new refresh token
-        saveRefreshToken(user, newRefreshToken);
-
-        return new TokenResponse(newAccessToken, newRefreshToken);
     }
 
     /**
