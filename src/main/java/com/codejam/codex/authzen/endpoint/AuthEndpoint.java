@@ -5,11 +5,9 @@ import com.codejam.codex.authzen.dtos.outputs.LoginResponse;
 import com.codejam.codex.authzen.dtos.outputs.RegisterResponse;
 import com.codejam.codex.authzen.dtos.outputs.UserResponse;
 import com.codejam.codex.authzen.services.AuthService;
-import com.codejam.codex.authzen.utils.ValidationUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 
 /**
  * Endpoint responsible for handling authentication-related logic such as
@@ -19,12 +17,10 @@ import org.springframework.util.StringUtils;
 public class AuthEndpoint {
 
     private final AuthService authService;
-    private final ValidationUtil validationUtil;
 
     @Autowired
-    public AuthEndpoint(AuthService authService, ValidationUtil validationUtil) {
+    public AuthEndpoint(AuthService authService) {
         this.authService = authService;
-        this.validationUtil = validationUtil;
     }
 
     /**
@@ -34,9 +30,6 @@ public class AuthEndpoint {
      * @return true if authenticated; false otherwise
      */
     public boolean isAuthenticated(HttpServletRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Request cannot be null");
-        }
         return authService.isAuthenticated(request);
     }
 
@@ -47,9 +40,6 @@ public class AuthEndpoint {
      * @return Username or null if token is invalid
      */
     public String getUsername(HttpServletRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Request cannot be null");
-        }
         return authService.getUsername(request);
     }
 
@@ -60,10 +50,6 @@ public class AuthEndpoint {
      * @return RegisterResponse with user details and verification status.
      */
     public RegisterResponse register(RegisterRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Registration request cannot be null");
-        }
-        validationUtil.validateRegisterRequest(request);
         return authService.register(request);
     }
 
@@ -74,10 +60,6 @@ public class AuthEndpoint {
      * @return LoginResponse with tokens and user details, or null if authentication fails.
      */
     public LoginResponse login(LoginRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Login request cannot be null");
-        }
-        validationUtil.validateLoginRequest(request);
         return authService.login(request);
     }
 
@@ -89,13 +71,6 @@ public class AuthEndpoint {
      * @return LoginResponse with OAuth tokens and user details, or null if authentication fails.
      */
     public LoginResponse oauthLogin(String provider, String code) {
-        if (!StringUtils.hasText(provider)) {
-            throw new IllegalArgumentException("OAuth provider cannot be empty");
-        }
-        if (!StringUtils.hasText(code)) {
-            throw new IllegalArgumentException("Authorization code cannot be empty");
-        }
-        validationUtil.validateOAuthProvider(provider);
         return authService.oauthLogin(provider, code);
     }
 
@@ -106,10 +81,6 @@ public class AuthEndpoint {
      * @return Success message if email was sent, error message otherwise.
      */
     public String requestPasswordReset(String email) {
-        if (!StringUtils.hasText(email)) {
-            throw new IllegalArgumentException("Email cannot be empty");
-        }
-        validationUtil.validateEmail(email);
         return authService.requestPasswordReset(email);
     }
 
@@ -120,10 +91,6 @@ public class AuthEndpoint {
      * @return Success message if password was reset, error message otherwise.
      */
     public String resetPassword(PasswordResetRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Password reset request cannot be null");
-        }
-        validationUtil.validatePasswordResetRequest(request);
         return authService.resetPassword(request);
     }
 
@@ -134,12 +101,6 @@ public class AuthEndpoint {
      * @return LoginResponse with new tokens and user details, or null if refresh fails.
      */
     public LoginResponse refreshToken(RefreshTokenRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Refresh token request cannot be null");
-        }
-        if (!StringUtils.hasText(request.getRefreshToken())) {
-            throw new IllegalArgumentException("Refresh token cannot be empty");
-        }
         return authService.refreshToken(request);
     }
 
@@ -150,9 +111,6 @@ public class AuthEndpoint {
      * @return true if token was successfully blacklisted, false otherwise.
      */
     public boolean blacklistToken(HttpServletRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Request cannot be null");
-        }
         return authService.blacklistToken(request);
     }
 
@@ -163,9 +121,6 @@ public class AuthEndpoint {
      * @return UserResponse with user details, or null if user not found.
      */
     public UserResponse getUserDetails(String username) {
-        if (!StringUtils.hasText(username)) {
-            throw new IllegalArgumentException("Username cannot be empty");
-        }
         return authService.getUserDetails(username);
     }
 }

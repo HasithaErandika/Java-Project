@@ -12,7 +12,7 @@ import lombok.Setter;
 @AllArgsConstructor
 public class RoleRequest {
     @NotBlank
-    private String name;
+    private String roleName;
 
     private String description;
 

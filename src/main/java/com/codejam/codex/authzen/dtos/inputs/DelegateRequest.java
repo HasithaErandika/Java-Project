@@ -6,18 +6,16 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-import java.util.List;
-
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
 public class DelegateRequest {
     @NotNull
-    private String targetUsername;
+    private Long userId;
 
     @NotNull
-    private List<String> permissions;
+    private String role;
 
     private String reason;
 }
