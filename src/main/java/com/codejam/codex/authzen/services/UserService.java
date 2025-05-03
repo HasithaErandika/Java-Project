@@ -5,6 +5,7 @@ import com.codejam.codex.authzen.dtos.outputs.UpdateUserResponse;
 import com.codejam.codex.authzen.dtos.outputs.UserResponse;
 import com.codejam.codex.authzen.models.User;
 import com.codejam.codex.authzen.repositories.UserRepository;
+import com.codejam.codex.authzen.utils.JwtService;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.userdetails.*;
@@ -12,18 +13,85 @@ import org.springframework.security.core.userdetails.User.UserBuilder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class UserService {
 
+    private static final Logger logger = LoggerFactory.getLogger(UserService.class);
+    private static final int MAX_FAILED_ATTEMPTS = 5;
+    private static final long LOCK_TIME_DURATION = TimeUnit.MINUTES.toMillis(30);
+    private static final Pattern PASSWORD_PATTERN = Pattern.compile(
+        "^(?=.*[0-9])(?=.*[a-z])(?=.*[A-Z])(?=.*[@#$%^&+=])(?=\\S+$).{8,}$"
+    );
+    private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{3,20}$");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[A-Za-z0-9+_.-]+@(.+)$");
+
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtService jwtService;
+    private final Map<String, FailedLoginAttempt> failedAttempts = new ConcurrentHashMap<>();
+
+    private static class FailedLoginAttempt {
+        private int attempts;
+        private long lastAttemptTime;
+        private boolean locked;
+
+        public FailedLoginAttempt() {
+            this.attempts = 0;
+            this.lastAttemptTime = System.currentTimeMillis();
+            this.locked = false;
+        }
+
+        public void incrementAttempts() {
+            attempts++;
+            lastAttemptTime = System.currentTimeMillis();
+            if (attempts >= MAX_FAILED_ATTEMPTS) {
+                locked = true;
+            }
+        }
+
+        public boolean isLocked() {
+            if (locked && System.currentTimeMillis() - lastAttemptTime > LOCK_TIME_DURATION) {
+                locked = false;
+                attempts = 0;
+            }
+            return locked;
+        }
+
+        public void reset() {
+            attempts = 0;
+            locked = false;
+            lastAttemptTime = System.currentTimeMillis();
+        }
+    }
+
+    private boolean isValidPassword(String password) {
+        return password != null && 
+               PASSWORD_PATTERN.matcher(password).matches();
+    }
+
+    private boolean isValidUsername(String username) {
+        return username != null && 
+               USERNAME_PATTERN.matcher(username).matches();
+    }
+
+    private boolean isValidEmail(String email) {
+        return email != null && 
+               EMAIL_PATTERN.matcher(email).matches();
+    }
 
     public UserResponse loadUserByUsername(String usernameOrEmail) throws UsernameNotFoundException {
         if (!StringUtils.hasText(usernameOrEmail)) {
@@ -142,5 +210,66 @@ public class UserService {
         } catch (Exception e) {
             throw new RuntimeException("Error updating user: " + e.getMessage());
         }
+    }
+
+    public boolean authenticate(String username, String password) {
+        if (!isValidUsername(username) || password == null || password.trim().isEmpty()) {
+            logger.error("Invalid credentials format");
+            return false;
+        }
+
+        FailedLoginAttempt attempt = failedAttempts.computeIfAbsent(username, k -> new FailedLoginAttempt());
+        if (attempt.isLocked()) {
+            logger.warn("Account locked for user: {}", username);
+            return false;
+        }
+
+        try {
+            User user = userRepository.findByUsername(username)
+                    .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+            if (!user.isActive()) {
+                logger.error("User account is not active: {}", username);
+                return false;
+            }
+
+            if (passwordEncoder.matches(password, user.getPassword())) {
+                attempt.reset();
+                return true;
+            }
+
+            attempt.incrementAttempts();
+            logger.warn("Failed login attempt for user: {}", username);
+            return false;
+        } catch (Exception e) {
+            attempt.incrementAttempts();
+            logger.error("Authentication error for user {}: {}", username, e.getMessage());
+            return false;
+        }
+    }
+
+    public void lockAccount(String username) {
+        if (isValidUsername(username)) {
+            FailedLoginAttempt attempt = failedAttempts.computeIfAbsent(username, k -> new FailedLoginAttempt());
+            attempt.incrementAttempts();
+            logger.warn("Account locked for user: {}", username);
+        }
+    }
+
+    public void unlockAccount(String username) {
+        if (isValidUsername(username)) {
+            FailedLoginAttempt attempt = failedAttempts.get(username);
+            if (attempt != null) {
+                attempt.reset();
+                logger.info("Account unlocked for user: {}", username);
+            }
+        }
+    }
+
+    public boolean isAccountLocked(String username) {
+        if (!isValidUsername(username)) {
+            return true;
+        }
+        FailedLoginAttempt attempt = failedAttempts.get(username);
+        return attempt != null && attempt.isLocked();
     }
 }

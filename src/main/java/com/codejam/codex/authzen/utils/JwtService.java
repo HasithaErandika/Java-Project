@@ -6,14 +6,23 @@ import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class JwtService {
+
+    private static final Logger logger = LoggerFactory.getLogger(JwtService.class);
+    private static final String TOKEN_TYPE_CLAIM = "token_type";
+    private static final String ACCESS_TOKEN_TYPE = "access";
+    private static final String REFRESH_TOKEN_TYPE = "refresh";
+    private static final long TOKEN_REVOCATION_WINDOW = TimeUnit.HOURS.toMillis(24);
 
     @Value("${jwt.secret}")
     private String jwtSecret;
@@ -24,7 +33,7 @@ public class JwtService {
     @Value("${jwt.refresh-token.expiry-ms}")
     private long refreshTokenExpiry;
 
-    private final Map<String, String> blacklistedTokens = new ConcurrentHashMap<>();
+    private final Map<String, TokenRevocationInfo> revokedTokens = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void validateSecretLength() {
@@ -169,24 +178,61 @@ public class JwtService {
     }
 
     public boolean isTokenBlacklisted(String token) {
-        return token != null && blacklistedTokens.containsKey(token);
+        if (token == null || token.trim().isEmpty()) {
+            return true;
+        }
+
+        TokenRevocationInfo info = revokedTokens.get(token);
+        if (info != null) {
+            if (info.isExpired()) {
+                revokedTokens.remove(token);
+                return false;
+            }
+            return true;
+        }
+        return false;
     }
 
-    public void blacklistToken(String token) {
+    public void blacklistToken(String token, String reason) {
         if (token != null && !token.trim().isEmpty()) {
-            blacklistedTokens.put(token, new Date().toString());
+            revokedTokens.put(token, new TokenRevocationInfo(reason));
+            logger.info("Token blacklisted: {}", reason);
         }
     }
 
-    public void removeExpiredBlacklistedTokens() {
-        Date now = new Date();
-        blacklistedTokens.entrySet().removeIf(entry -> {
-            try {
-                Date expiration = extractExpiration(entry.getKey());
-                return expiration != null && expiration.before(now);
-            } catch (JwtException | IllegalArgumentException e) {
-                return true;
-            }
-        });
+    public void cleanupExpiredBlacklistedTokens() {
+        revokedTokens.entrySet().removeIf(entry -> entry.getValue().isExpired());
+    }
+
+    public boolean isRefreshToken(String token) {
+        Claims claims = extractAllClaims(token);
+        if (claims == null) {
+            return false;
+        }
+        String tokenType = claims.get(TOKEN_TYPE_CLAIM, String.class);
+        return REFRESH_TOKEN_TYPE.equals(tokenType);
+    }
+
+    public boolean isAccessToken(String token) {
+        Claims claims = extractAllClaims(token);
+        if (claims == null) {
+            return false;
+        }
+        String tokenType = claims.get(TOKEN_TYPE_CLAIM, String.class);
+        return ACCESS_TOKEN_TYPE.equals(tokenType);
+    }
+
+    private static class TokenRevocationInfo {
+        private final Date revokedAt;
+        private final String reason;
+
+        public TokenRevocationInfo(String reason) {
+            this.revokedAt = new Date();
+            this.reason = reason;
+        }
+
+        public boolean isExpired() {
+            return System.currentTimeMillis() - revokedAt.getTime() > TOKEN_REVOCATION_WINDOW;
+        }
     }
 }
