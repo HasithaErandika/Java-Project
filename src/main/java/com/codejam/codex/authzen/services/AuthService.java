@@ -77,18 +77,28 @@ public class AuthService {
      * @return LoginResponse with tokens and user details, or null if authentication fails.
      */
     public LoginResponse login(LoginRequest request) {
-        TokenResponse tokenResponse = authenticateUser(request);
-        UserResponse userResponse = getUserDetails(request.getEmail());
-        return LoginResponse.builder()
-                .accessToken(tokenResponse.getAccessToken())
-                .refreshToken(tokenResponse.getRefreshToken())
-                .tokenType("Bearer")
-                .expiresIn(3600L)
-                .username(userResponse.getUsername())
-                .email(userResponse.getEmail())
-                .roles(new ArrayList<>(userResponse.getRoles()))
-                .permissions(new ArrayList<>(userResponse.getPermissions()))
-                .build();
+        try {
+            TokenResponse tokenResponse = authenticateUser(request);
+            if (tokenResponse == null) {
+                return null;
+            }
+            UserResponse userResponse = getUserDetails(request.getEmail());
+            if (userResponse == null) {
+                return null;
+            }
+            return LoginResponse.builder()
+                    .accessToken(tokenResponse.getAccessToken())
+                    .refreshToken(tokenResponse.getRefreshToken())
+                    .tokenType("Bearer")
+                    .expiresIn(3600L)
+                    .username(userResponse.getUsername())
+                    .email(userResponse.getEmail())
+                    .roles(new ArrayList<>(userResponse.getRoles()))
+                    .permissions(new ArrayList<>(userResponse.getPermissions()))
+                    .build();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -99,25 +109,39 @@ public class AuthService {
      * @return LoginResponse with OAuth tokens and user details, or null if authentication fails.
      */
     public LoginResponse oauthLogin(String provider, String code) {
-        OAuthRequest oAuthRequest = new OAuthRequest();
-        oAuthRequest.setProvider(provider);
-        oAuthRequest.setOauthToken(code);
-        TokenResponse tokenResponse = authenticateOAuth(oAuthRequest);
-        
-        // Extract username from access token
-        String username = jwtService.extractUsername(tokenResponse.getAccessToken());
-        UserResponse userResponse = getUserDetails(username);
-        
-        return LoginResponse.builder()
-                .accessToken(tokenResponse.getAccessToken())
-                .refreshToken(tokenResponse.getRefreshToken())
-                .tokenType("Bearer")
-                .expiresIn(3600L)
-                .username(userResponse.getUsername())
-                .email(userResponse.getEmail())
-                .roles(new ArrayList<>(userResponse.getRoles()))
-                .permissions(new ArrayList<>(userResponse.getPermissions()))
-                .build();
+        try {
+            OAuthRequest oAuthRequest = new OAuthRequest();
+            oAuthRequest.setProvider(provider);
+            oAuthRequest.setOauthToken(code);
+            TokenResponse tokenResponse = authenticateOAuth(oAuthRequest);
+            if (tokenResponse == null) {
+                return null;
+            }
+            
+            // Extract username from access token
+            String username = jwtService.extractUsername(tokenResponse.getAccessToken());
+            if (username == null) {
+                return null;
+            }
+            
+            UserResponse userResponse = getUserDetails(username);
+            if (userResponse == null) {
+                return null;
+            }
+            
+            return LoginResponse.builder()
+                    .accessToken(tokenResponse.getAccessToken())
+                    .refreshToken(tokenResponse.getRefreshToken())
+                    .tokenType("Bearer")
+                    .expiresIn(3600L)
+                    .username(userResponse.getUsername())
+                    .email(userResponse.getEmail())
+                    .roles(new ArrayList<>(userResponse.getRoles()))
+                    .permissions(new ArrayList<>(userResponse.getPermissions()))
+                    .build();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -127,10 +151,14 @@ public class AuthService {
      * @return Success message if email was sent, error message otherwise.
      */
     public String requestPasswordReset(String email) {
-        ResetRequest resetRequest = new ResetRequest();
-        resetRequest.setEmail(email);
-        boolean success = sendPasswordResetEmail(resetRequest);
-        return success ? "Password reset email sent successfully" : "Failed to send password reset email";
+        try {
+            ResetRequest resetRequest = new ResetRequest();
+            resetRequest.setEmail(email);
+            boolean success = sendPasswordResetEmail(resetRequest);
+            return success ? "Password reset email sent successfully" : "Failed to send password reset email";
+        } catch (Exception e) {
+            return "Failed to send password reset email";
+        }
     }
 
     /**
@@ -140,11 +168,15 @@ public class AuthService {
      * @return Success message if password was reset, error message otherwise.
      */
     public String resetPassword(PasswordResetRequest request) {
-        ResetPasswordRequest resetPasswordRequest = new ResetPasswordRequest();
-        resetPasswordRequest.setToken(request.getResetToken());
-        resetPasswordRequest.setNewPassword(request.getNewPassword());
-        boolean success = resetUserPassword(resetPasswordRequest);
-        return success ? "Password reset successful" : "Failed to reset password";
+        try {
+            ResetPasswordRequest resetPasswordRequest = new ResetPasswordRequest();
+            resetPasswordRequest.setToken(request.getResetToken());
+            resetPasswordRequest.setNewPassword(request.getNewPassword());
+            boolean success = resetUserPassword(resetPasswordRequest);
+            return success ? "Password reset successful" : "Failed to reset password";
+        } catch (Exception e) {
+            return "Failed to reset password";
+        }
     }
 
     /**
@@ -154,22 +186,36 @@ public class AuthService {
      * @return LoginResponse with new tokens and user details, or null if refresh fails.
      */
     public LoginResponse refreshToken(RefreshTokenRequest request) {
-        TokenResponse tokenResponse = refreshToken(request.getRefreshToken());
-        
-        // Extract username from access token
-        String username = jwtService.extractUsername(tokenResponse.getAccessToken());
-        UserResponse userResponse = getUserDetails(username);
-        
-        return LoginResponse.builder()
-                .accessToken(tokenResponse.getAccessToken())
-                .refreshToken(tokenResponse.getRefreshToken())
-                .tokenType("Bearer")
-                .expiresIn(3600L)
-                .username(userResponse.getUsername())
-                .email(userResponse.getEmail())
-                .roles(new ArrayList<>(userResponse.getRoles()))
-                .permissions(new ArrayList<>(userResponse.getPermissions()))
-                .build();
+        try {
+            TokenResponse tokenResponse = refreshToken(request.getRefreshToken());
+            if (tokenResponse == null) {
+                return null;
+            }
+            
+            // Extract username from access token
+            String username = jwtService.extractUsername(tokenResponse.getAccessToken());
+            if (username == null) {
+                return null;
+            }
+            
+            UserResponse userResponse = getUserDetails(username);
+            if (userResponse == null) {
+                return null;
+            }
+            
+            return LoginResponse.builder()
+                    .accessToken(tokenResponse.getAccessToken())
+                    .refreshToken(tokenResponse.getRefreshToken())
+                    .tokenType("Bearer")
+                    .expiresIn(3600L)
+                    .username(userResponse.getUsername())
+                    .email(userResponse.getEmail())
+                    .roles(new ArrayList<>(userResponse.getRoles()))
+                    .permissions(new ArrayList<>(userResponse.getPermissions()))
+                    .build();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

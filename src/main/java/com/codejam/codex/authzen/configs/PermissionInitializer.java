@@ -12,9 +12,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.StringUtils;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 @Configuration
 public class PermissionInitializer {
@@ -29,56 +31,83 @@ public class PermissionInitializer {
             RolePermissionRepository rolePermissionRepository
     ) {
         return args -> {
-            logger.info("Initializing permissions...");
+            try {
+                logger.info("Initializing permissions...");
 
-            List<Permission> defaultPermissions = getDefaultPermissions();
-            List<Permission> userPermissions = getUserPermissions();
+                List<Permission> defaultPermissions = getDefaultPermissions();
+                List<Permission> userPermissions = getUserPermissions();
 
-            for (Permission permission : defaultPermissions) {
-                permissionRepository.findByName(permission.getName()).orElseGet(() -> {
-                    logger.info("Creating permission: {}", permission.getName());
-                    return permissionRepository.save(permission);
-                });
-            }
-
-            // === ROLE_ADMIN setup ===
-            Role adminRole = roleRepository.findByNameWithPermissions("ROLE_ADMIN")
-                    .orElseThrow(() -> new IllegalStateException("ROLE_ADMIN not found"));
-
-            logger.info("Assigning missing permissions to ROLE_ADMIN...");
-            for (Permission permission : defaultPermissions) {
-                if (adminRole.getRolePermissions().stream()
-                        .noneMatch(rp -> rp.getPermission().getName().equals(permission.getName()))) {
-
-                    RolePermission rp = RolePermission.builder()
-                            .role(adminRole)
-                            .permission(permissionRepository.findByName(permission.getName()).orElseThrow())
-                            .build();
-                    rolePermissionRepository.save(rp);
-                    logger.info("Assigned '{}' to ROLE_ADMIN", permission.getName());
+                // Validate and create permissions
+                for (Permission permission : defaultPermissions) {
+                    validatePermission(permission);
+                    createPermissionIfNotExists(permissionRepository, permission);
                 }
+
+                // === ROLE_ADMIN setup ===
+                Role adminRole = roleRepository.findByNameWithPermissions("ROLE_ADMIN")
+                        .orElseThrow(() -> new IllegalStateException("ROLE_ADMIN not found"));
+
+                logger.info("Assigning missing permissions to ROLE_ADMIN...");
+                assignPermissionsToRole(permissionRepository, rolePermissionRepository, adminRole, defaultPermissions);
+
+                // === ROLE_USER setup ===
+                Role userRole = roleRepository.findByNameWithPermissions("ROLE_USER")
+                        .orElseThrow(() -> new IllegalStateException("ROLE_USER not found"));
+
+                logger.info("Assigning relevant permissions to ROLE_USER...");
+                assignPermissionsToRole(permissionRepository, rolePermissionRepository, userRole, userPermissions);
+
+                logger.info("Permission initialization complete.");
+            } catch (Exception e) {
+                logger.error("Failed to initialize permissions: {}", e.getMessage(), e);
+                throw e;
             }
-
-            // === ROLE_USER setup ===
-            Role userRole = roleRepository.findByNameWithPermissions("ROLE_USER")
-                    .orElseThrow(() -> new IllegalStateException("ROLE_USER not found"));
-
-            logger.info("Assigning relevant permissions to ROLE_USER...");
-            for (Permission permission : userPermissions) {
-                if (userRole.getRolePermissions().stream()
-                        .noneMatch(rp -> rp.getPermission().getName().equals(permission.getName()))) {
-
-                    RolePermission rp = RolePermission.builder()
-                            .role(userRole)
-                            .permission(permissionRepository.findByName(permission.getName()).orElseThrow())
-                            .build();
-                    rolePermissionRepository.save(rp);
-                    logger.info("Assigned '{}' to ROLE_USER", permission.getName());
-                }
-            }
-
-            logger.info("Permission initialization complete.");
         };
+    }
+
+    private void validatePermission(Permission permission) {
+        if (permission == null) {
+            throw new IllegalArgumentException("Permission cannot be null");
+        }
+        if (!StringUtils.hasText(permission.getName())) {
+            throw new IllegalArgumentException("Permission name cannot be empty");
+        }
+        if (!StringUtils.hasText(permission.getDescription())) {
+            throw new IllegalArgumentException("Permission description cannot be empty");
+        }
+    }
+
+    private void createPermissionIfNotExists(PermissionRepository repository, Permission permission) {
+        Optional<Permission> existingPermission = repository.findByName(permission.getName());
+        if (existingPermission.isEmpty()) {
+            logger.info("Creating permission: {}", permission.getName());
+            repository.save(permission);
+        } else {
+            logger.info("Permission already exists: {}", permission.getName());
+        }
+    }
+
+    private void assignPermissionsToRole(
+            PermissionRepository permissionRepository,
+            RolePermissionRepository rolePermissionRepository,
+            Role role,
+            List<Permission> permissions
+    ) {
+        for (Permission permission : permissions) {
+            if (role.getRolePermissions().stream()
+                    .noneMatch(rp -> rp.getPermission().getName().equals(permission.getName()))) {
+
+                Permission existingPermission = permissionRepository.findByName(permission.getName())
+                        .orElseThrow(() -> new IllegalStateException("Permission not found: " + permission.getName()));
+
+                RolePermission rp = RolePermission.builder()
+                        .role(role)
+                        .permission(existingPermission)
+                        .build();
+                rolePermissionRepository.save(rp);
+                logger.info("Assigned '{}' to {}", permission.getName(), role.getName());
+            }
+        }
     }
 
     private List<Permission> getDefaultPermissions() {
@@ -122,6 +151,6 @@ public class PermissionInitializer {
                 Permission.builder().name("VIEW_STATS").description("View system statistics").build(),
                 Permission.builder().name("VIEW_CONTENT").description("View content").build(),
                 Permission.builder().name("USER_LOGOUT").description("Logout user").build()
-                );
+        );
     }
 }
