@@ -23,6 +23,8 @@ import org.springframework.security.web.header.writers.StaticHeadersWriter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import com.codejam.codex.authzen.security.RateLimitFilter;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -51,6 +53,14 @@ public class SecurityConfiguration {
 
     @Value("${jwt.secret}")
     private String jwtSecret;
+
+    @Value("${app.allowed-origins}")
+    private String allowedOrigins;
+
+    @Bean
+    public RateLimitFilter rateLimitFilter() {
+        return new RateLimitFilter();
+    }
 
     /**
      * Custom JWT Authentication Converter to extract roles from token claims.
@@ -81,8 +91,6 @@ public class SecurityConfiguration {
         return converter;
     }
 
-
-
     /**
      * Main Security Filter Chain configuration.
      * - Enables stateless session
@@ -95,6 +103,7 @@ public class SecurityConfiguration {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
                 .addFilterBefore(corsFilter(), CorsFilter.class)
+                .addFilterBefore(rateLimitFilter(), UsernamePasswordAuthenticationFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
@@ -125,10 +134,22 @@ public class SecurityConfiguration {
                 )
                 .headers(headers -> {
                     headers
-                            .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'self'"))
+                            .contentSecurityPolicy(csp -> csp.policyDirectives(
+                                    "default-src 'self'; " +
+                                    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+                                    "style-src 'self' 'unsafe-inline'; " +
+                                    "img-src 'self' data:; " +
+                                    "font-src 'self';"
+                            ))
                             .defaultsDisabled()
                             .addHeaderWriter(new StaticHeadersWriter("X-Content-Type-Options", "nosniff"))
-                            .httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31536000))
+                            .addHeaderWriter(new StaticHeadersWriter("X-Frame-Options", "DENY"))
+                            .addHeaderWriter(new StaticHeadersWriter("X-XSS-Protection", "1; mode=block"))
+                            .httpStrictTransportSecurity(hsts -> hsts
+                                    .includeSubDomains(true)
+                                    .maxAgeInSeconds(31536000)
+                                    .preload(true)
+                            )
                             .referrerPolicy(referrer -> referrer.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.SAME_ORIGIN));
                 });
 
@@ -142,9 +163,12 @@ public class SecurityConfiguration {
     @Bean
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("*")); // Consider restricting in production
+        config.setAllowedOrigins(Arrays.asList(allowedOrigins.split(",")));
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type"));
+        config.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With"));
+        config.setExposedHeaders(Arrays.asList("Authorization"));
+        config.setAllowCredentials(true);
+        config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
@@ -165,6 +189,9 @@ public class SecurityConfiguration {
      */
     @Bean
     public JwtDecoder jwtDecoder() {
+        if (jwtSecret == null || jwtSecret.length() < 32) {
+            throw new IllegalArgumentException("JWT secret must be at least 32 characters long");
+        }
         byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
         SecretKey key = new SecretKeySpec(keyBytes, "HmacSHA256");
         return NimbusJwtDecoder.withSecretKey(key).build();

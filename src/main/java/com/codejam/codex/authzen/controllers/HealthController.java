@@ -1,41 +1,54 @@
 package com.codejam.codex.authzen.controllers;
 
-import com.codejam.codex.authzen.constants.ApiEndpoint;
-import com.codejam.codex.authzen.responses.AuthzenResponse;
+import com.codejam.codex.authzen.responses.HealthResponse;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.lang.management.ManagementFactory;
-import java.time.Instant;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 
 @RestController
+@RequestMapping("/api/authenticate/health")
 public class HealthController {
 
-    @GetMapping(ApiEndpoint.HEALTH)
-    public ResponseEntity<AuthzenResponse<Map<String, Object>>> checkHealth() {
-        Map<String, Object> healthStatus = new HashMap<>();
+    @Autowired
+    private DataSource dataSource;
 
-        healthStatus.put("status", "UP");
-        healthStatus.put("application", "AuthZen API");
-        healthStatus.put("version", "1.0.0");
-        healthStatus.put("timestamp", Instant.now().toString());
-        healthStatus.put("uptime", getUptime());
+    @Autowired
+    private HealthIndicator mailHealthIndicator;
 
-        AuthzenResponse<Map<String, Object>> response = new AuthzenResponse<>(healthStatus);
-        response.setMessage("Health check successful");
+    @GetMapping
+    public ResponseEntity<HealthResponse> checkHealth() {
+        Map<String, String> services = new HashMap<>();
+        
+        // Check database health
+        try (Connection connection = dataSource.getConnection()) {
+            services.put("database", "UP");
+        } catch (SQLException e) {
+            services.put("database", "DOWN");
+        }
+
+        // Check mail service health
+        Health mailHealth = mailHealthIndicator.health();
+        services.put("mail", mailHealth.getStatus().getCode());
+
+        // Check GitHub OAuth health (you would need to implement this)
+        services.put("github_oauth", "UP");
+
+        HealthResponse response = new HealthResponse(
+                "UP",
+                services,
+                System.currentTimeMillis()
+        );
 
         return ResponseEntity.ok(response);
-    }
-
-    private String getUptime() {
-        long uptimeMillis = ManagementFactory.getRuntimeMXBean().getUptime();
-        long seconds = uptimeMillis / 1000 % 60;
-        long minutes = uptimeMillis / (1000 * 60) % 60;
-        long hours = uptimeMillis / (1000 * 60 * 60);
-
-        return String.format("%02dh:%02dm:%02ds", hours, minutes, seconds);
     }
 }

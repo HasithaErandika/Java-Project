@@ -1,7 +1,10 @@
 package com.codejam.codex.authzen.models;
 
-
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.*;
 
 import java.sql.Timestamp;
@@ -24,12 +27,19 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, name = "username")
+    @NotBlank(message = "Username is required")
+    @Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
+    @Pattern(regexp = "^[a-zA-Z0-9_]+$", message = "Username can only contain letters, numbers, and underscores")
+    @Column(nullable = false, name = "username", unique = true)
     private String username;
 
-    @Column(nullable = false, name = "email")
+    @NotBlank(message = "Email is required")
+    @Email(message = "Email should be valid")
+    @Column(nullable = false, name = "email", unique = true)
     private String email;
 
+    @NotBlank(message = "Password is required")
+    @Size(min = 8, message = "Password must be at least 8 characters long")
     @Column(nullable = false, name = "password")
     private String password;
 
@@ -42,10 +52,21 @@ public class User {
     @Column(nullable = false, name = "created_at")
     private Timestamp createdAt;
 
+    @Column(name = "last_login_at")
+    private Timestamp lastLoginAt;
+
+    @Column(name = "failed_login_attempts")
+    private int failedLoginAttempts;
+
+    @Column(name = "last_failed_login")
+    private Timestamp lastFailedLogin;
+
+    @Column(name = "password_changed_at")
+    private Timestamp passwordChangedAt;
+
     @OneToMany(mappedBy = "user", cascade = {CascadeType.ALL}, orphanRemoval = true)
     @Builder.Default
     private List<RefreshToken> refreshTokens = new ArrayList<>();
-
 
     public void addRefreshToken(RefreshToken refreshToken) {
         refreshTokens.add(refreshToken);
@@ -61,21 +82,19 @@ public class User {
     @Builder.Default
     private List<EmailToken> emailTokens = new ArrayList<>();
 
-
     public void addEmailTokens(EmailToken emailToken) {
         emailTokens.add(emailToken);
         emailToken.setUser(this);
     }
 
     public void removeEmailToken(EmailToken emailToken) {
-        refreshTokens.remove(emailToken);
+        emailTokens.remove(emailToken);
         emailToken.setUser(null);
     }
 
     @OneToMany(mappedBy = "user", cascade = {CascadeType.ALL}, orphanRemoval = true)
     @Builder.Default
     private List<OauthProvider> oauthProviders = new ArrayList<>();
-
 
     public void addOauthProvider(OauthProvider oauthProvider) {
         oauthProviders.add(oauthProvider);
@@ -91,14 +110,13 @@ public class User {
     @Builder.Default
     private List<AuditLog> auditLogs = new ArrayList<>();
 
-
     public void addAuditLog(AuditLog auditLog) {
         auditLogs.add(auditLog);
         auditLog.setUser(this);
     }
 
     public void removeAuditLog(AuditLog auditLog) {
-        oauthProviders.remove(auditLog);
+        auditLogs.remove(auditLog);
         auditLog.setUser(null);
     }
 
