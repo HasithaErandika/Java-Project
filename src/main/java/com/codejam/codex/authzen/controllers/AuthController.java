@@ -1,161 +1,169 @@
 package com.codejam.codex.authzen.controllers;
 
 import com.codejam.codex.authzen.constants.ApiEndpoint;
-import com.codejam.codex.authzen.dtos.inputs.*;
-import com.codejam.codex.authzen.dtos.outputs.TokenResponse;
-import com.codejam.codex.authzen.dtos.outputs.UserResponse;
-import com.codejam.codex.authzen.responses.AuthzenResponse;
+import com.codejam.codex.authzen.dtos.inputs.LoginRequest;
+import com.codejam.codex.authzen.dtos.inputs.PasswordResetRequest;
+import com.codejam.codex.authzen.dtos.inputs.RefreshTokenRequest;
+import com.codejam.codex.authzen.dtos.inputs.RegisterRequest;
+import com.codejam.codex.authzen.dtos.outputs.LoginResponse;
+import com.codejam.codex.authzen.dtos.outputs.RegisterResponse;
 import com.codejam.codex.authzen.endpoint.AuthEndpoint;
+import com.codejam.codex.authzen.responses.AuthzenResponse;
+import com.codejam.codex.authzen.services.RateLimiterService;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Controller responsible for handling HTTP requests related to authentication,
- * including user registration, login, password reset, and OAuth login.
+ * AuthController handles all authentication-related endpoints.
+ * This includes user registration, login, password reset, and OAuth login.
  */
 @RestController
 @RequestMapping(ApiEndpoint.AUTH)
 public class AuthController {
 
+    private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
+
     private final AuthEndpoint authEndpoint;
+    private final RateLimiterService rateLimiterService;
 
     @Autowired
-    public AuthController(AuthEndpoint authEndpoint) {
+    public AuthController(AuthEndpoint authEndpoint, RateLimiterService rateLimiterService) {
         this.authEndpoint = authEndpoint;
+        this.rateLimiterService = rateLimiterService;
     }
 
-    /**
-     * Registers a new user.
-     *
-     * @param request The registration request containing user details.
-     * @return A ResponseEntity with the result of the registration.
-     */
     @PostMapping(ApiEndpoint.AUTH_REGISTER)
-    public ResponseEntity<AuthzenResponse<UserResponse>> register(@RequestBody RegisterRequest request) {
+    public ResponseEntity<AuthzenResponse<RegisterResponse>> register(@Valid @RequestBody RegisterRequest registerRequest) {
         try {
-            UserResponse userResponse = authEndpoint.registerUser(request);
-            AuthzenResponse<UserResponse> response = new AuthzenResponse<>(userResponse);
-            response.setMessage("User registered successfully");
+            if (!rateLimiterService.tryAcquire("register", registerRequest.getEmail())) {
+                logger.warn("Rate limit exceeded for registration from IP: {}", registerRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(new AuthzenResponse<>(null, false, "Too many registration attempts. Please try again later."));
+            }
+
+            RegisterResponse registerResponse = authEndpoint.register(registerRequest);
+            if (registerResponse == null) {
+                logger.error("Failed to register user: {}", registerRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new AuthzenResponse<>(null, false, "Failed to register user"));
+            }
+            AuthzenResponse<RegisterResponse> response = new AuthzenResponse<>(registerResponse);
+            response.setMessage("User registered successfully.");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            throw new RuntimeException("An error occurred during registration");
+            logger.error("Error during user registration", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred during registration"));
         }
     }
 
-    /**
-     * Authenticates a user and issues a token.
-     *
-     * @param request The login request containing user credentials.
-     * @return A ResponseEntity with the result of the login process.
-     */
     @PostMapping(ApiEndpoint.AUTH_LOGIN)
-    public ResponseEntity<AuthzenResponse<TokenResponse>> login(@RequestBody LoginRequest request) {
+    public ResponseEntity<AuthzenResponse<LoginResponse>> login(@Valid @RequestBody LoginRequest loginRequest) {
         try {
-            TokenResponse token = authEndpoint.authenticateUser(request);
-            if (token != null) {
-                AuthzenResponse<TokenResponse> response = new AuthzenResponse<>(token);
-                response.setMessage("User logged successfully");
-                return ResponseEntity.ok(response);
-            } else {
+            if (!rateLimiterService.tryAcquire("login", loginRequest.getEmail())) {
+                logger.warn("Rate limit exceeded for login attempts from email: {}", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(new AuthzenResponse<>(null, false, "Too many login attempts. Please try again later."));
+            }
+
+            LoginResponse loginResponse = authEndpoint.login(loginRequest);
+            if (loginResponse == null) {
+                logger.error("Failed to login user: {}", loginRequest.getEmail());
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(new AuthzenResponse<>(null, false, "Invalid credentials"));
             }
+            AuthzenResponse<LoginResponse> response = new AuthzenResponse<>(loginResponse);
+            response.setMessage("User logged in successfully.");
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
+            logger.error("Error during user login", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthzenResponse<>(null, false, "An error occurred during login"));
         }
     }
 
-    /**
-     * Handles OAuth login.
-     *
-     * @param request The OAuth login request containing OAuth credentials.
-     * @return A ResponseEntity with the result of the OAuth login.
-     */
     @PostMapping(ApiEndpoint.AUTH_OAUTH)
-    public ResponseEntity<AuthzenResponse<TokenResponse>> oauthLogin(@RequestBody OAuthRequest request) {
+    public ResponseEntity<AuthzenResponse<LoginResponse>> oauthLogin(@RequestParam("provider") String provider,
+                                                                   @RequestParam("code") String code) {
         try {
-            TokenResponse oauthToken = authEndpoint.authenticateOAuth(request);
-            if (oauthToken != null) {
-                AuthzenResponse<TokenResponse> response = new AuthzenResponse<>(oauthToken);
-                response.setMessage("User logged successfully");
-                return ResponseEntity.ok(response);
-            } else {
+            if (!rateLimiterService.tryAcquire("oauth_login", provider)) {
+                logger.warn("Rate limit exceeded for OAuth login attempts from provider: {}", provider);
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(new AuthzenResponse<>(null, false, "Too many OAuth login attempts. Please try again later."));
+            }
+
+            LoginResponse loginResponse = authEndpoint.oauthLogin(provider, code);
+            if (loginResponse == null) {
+                logger.error("Failed to login with OAuth provider: {}", provider);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(new AuthzenResponse<>(null, false, "OAuth login failed"));
             }
+            AuthzenResponse<LoginResponse> response = new AuthzenResponse<>(loginResponse);
+            response.setMessage("OAuth login successful.");
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
+            logger.error("Error during OAuth login", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthzenResponse<>(null, false, "An error occurred during OAuth login"));
         }
     }
 
-    /**
-     * Requests a password reset by sending an email or token.
-     *
-     * @param request The reset request containing the user's email.
-     * @return A ResponseEntity with the result of the reset request.
-     */
     @PostMapping(ApiEndpoint.AUTH_RESET_REQUEST)
-    public ResponseEntity<AuthzenResponse<Object>> resetPasswordRequest(@RequestBody ResetRequest request) {
+    public ResponseEntity<AuthzenResponse<String>> requestPasswordReset(@RequestParam("email") String email) {
         try {
-            boolean emailSent = authEndpoint.sendPasswordResetEmail(request);
-            if (emailSent) {
-                AuthzenResponse<Object> response = new AuthzenResponse<>();
-                response.setMessage("Password reset email sent");
-                return ResponseEntity.ok(response);
-            } else {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body(new AuthzenResponse<>(null, false, "Failed to send reset email"));
+            if (!rateLimiterService.tryAcquire("password_reset", email)) {
+                logger.warn("Rate limit exceeded for password reset requests from email: {}", email);
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                        .body(new AuthzenResponse<>(null, false, "Too many password reset requests. Please try again later."));
             }
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AuthzenResponse<>(null, false, "An error occurred while sending reset request"));
-        }
-    }
 
-    /**
-     * Resets the user's password using the provided token.
-     *
-     * @param request The reset password request containing token and new password.
-     * @return A ResponseEntity with the result of the password reset.
-     */
-    @PostMapping(ApiEndpoint.AUTH_RESET_PASSWORD)
-    public ResponseEntity<AuthzenResponse<Object>> resetPassword(@RequestBody ResetPasswordRequest request) {
-        try {
-            boolean isPasswordReset = authEndpoint.resetUserPassword(request);
-            if (isPasswordReset) {
-                AuthzenResponse<Object> response = new AuthzenResponse<>();
-                response.setMessage("Password reset successfully");
-                return ResponseEntity.ok(response);
-            } else {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body(new AuthzenResponse<>(null, false, "Failed to reset password"));
-            }
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AuthzenResponse<>(null, false, "An error occurred during password reset"));
-        }
-    }
-
-    /**
-     * Refreshes the access token using a valid refresh token.
-     *
-     * @param request RefreshTokenRequest with refresh token
-     * @return New access and refresh token pair
-     */
-    @PostMapping(ApiEndpoint.AUTH_REFRESH)
-    public ResponseEntity<AuthzenResponse<TokenResponse>> refreshToken(@RequestBody RefreshTokenRequest request) {
-        try {
-            TokenResponse tokenResponse = authEndpoint.refreshToken(request.getRefreshToken());
-            AuthzenResponse<TokenResponse> response = new AuthzenResponse<>(tokenResponse);
-            response.setMessage("User refreshed successfully");
+            String message = authEndpoint.requestPasswordReset(email);
+            AuthzenResponse<String> response = new AuthzenResponse<>();
+            response.setMessage(message);
             return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error requesting password reset", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while requesting password reset"));
+        }
+    }
+
+    @PostMapping(ApiEndpoint.AUTH_RESET_PASSWORD)
+    public ResponseEntity<AuthzenResponse<String>> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
+        try {
+            String message = authEndpoint.resetPassword(request);
+            AuthzenResponse<String> response = new AuthzenResponse<>();
+            response.setMessage(message);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error resetting password", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while resetting password"));
+        }
+    }
+
+    @PostMapping(ApiEndpoint.AUTH_REFRESH)
+    public ResponseEntity<AuthzenResponse<LoginResponse>> refreshToken(@Valid @RequestBody RefreshTokenRequest request) {
+        try {
+            LoginResponse loginResponse = authEndpoint.refreshToken(request);
+            if (loginResponse == null) {
+                logger.error("Failed to refresh token");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new AuthzenResponse<>(null, false, "Invalid refresh token"));
+            }
+            AuthzenResponse<LoginResponse> response = new AuthzenResponse<>(loginResponse);
+            response.setMessage("Token refreshed successfully.");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error refreshing token", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while refreshing token"));
         }
     }
 }

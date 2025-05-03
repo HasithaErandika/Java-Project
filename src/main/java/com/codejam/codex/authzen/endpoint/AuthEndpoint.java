@@ -1,7 +1,8 @@
 package com.codejam.codex.authzen.endpoint;
 
 import com.codejam.codex.authzen.dtos.inputs.*;
-import com.codejam.codex.authzen.dtos.outputs.TokenResponse;
+import com.codejam.codex.authzen.dtos.outputs.LoginResponse;
+import com.codejam.codex.authzen.dtos.outputs.RegisterResponse;
 import com.codejam.codex.authzen.dtos.outputs.UserResponse;
 import com.codejam.codex.authzen.services.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -43,83 +44,83 @@ public class AuthEndpoint {
     }
 
     /**
-     * Validates and refreshes access and refresh tokens using the provided refresh token.
-     *
-     * @param refreshToken refresh token string
-     * @return TokenResponse containing new tokens
-     */
-    public TokenResponse refreshToken(String refreshToken) {
-        return authService.refreshToken(refreshToken);
-    }
-
-    /**
      * Registers a new user.
      *
      * @param request The registration request containing user details.
-     * @return true if registration was successful, false otherwise.
+     * @return RegisterResponse with user details and verification status.
      */
-    public UserResponse registerUser(RegisterRequest request) {
-        return authService.registerUser(request);
+    public RegisterResponse register(RegisterRequest request) {
+        return authService.register(request);
     }
 
     /**
-     * Authenticates a user and returns an access token.
+     * Authenticates a user and returns login response.
      *
      * @param request The login request containing user credentials.
-     * @return TokenResponse with access token, or null if authentication fails.
+     * @return LoginResponse with tokens and user details, or null if authentication fails.
      */
-    public TokenResponse authenticateUser(LoginRequest request) {
-        return authService.authenticateUser(request);
+    public LoginResponse login(LoginRequest request) {
+        return authService.login(request);
     }
 
     /**
-     * Authenticates a user via OAuth and returns an access token.
+     * Authenticates a user via OAuth and returns login response.
      *
-     * @param request The OAuth request containing credentials.
-     * @return TokenResponse with OAuth token, or null if authentication fails.
+     * @param provider The OAuth provider (e.g., "google", "github")
+     * @param code The authorization code from the OAuth provider
+     * @return LoginResponse with OAuth tokens and user details, or null if authentication fails.
      */
-    public TokenResponse authenticateOAuth(OAuthRequest request) {
-        return authService.authenticateOAuth(request);
+    public LoginResponse oauthLogin(String provider, String code) {
+        return authService.oauthLogin(provider, code);
     }
 
     /**
      * Sends a password reset email to the user.
      *
-     * @param request The reset request containing the user's email.
-     * @return true if email was successfully sent, false otherwise.
+     * @param email The user's email address.
+     * @return Success message if email was sent, error message otherwise.
      */
-    public boolean sendPasswordResetEmail(ResetRequest request) {
-        return authService.sendPasswordResetEmail(request);
+    public String requestPasswordReset(String email) {
+        return authService.requestPasswordReset(email);
     }
 
     /**
      * Resets the user's password using a provided reset token.
      *
      * @param request The reset password request containing the token and new password.
-     * @return true if the password was successfully reset, false otherwise.
+     * @return Success message if password was reset, error message otherwise.
      */
-    public boolean resetUserPassword(ResetPasswordRequest request) {
-        return authService.resetUserPassword(request);
+    public String resetPassword(PasswordResetRequest request) {
+        return authService.resetPassword(request);
     }
 
+    /**
+     * Refreshes access and refresh tokens using the provided refresh token.
+     *
+     * @param request The refresh token request containing the refresh token.
+     * @return LoginResponse with new tokens and user details, or null if refresh fails.
+     */
+    public LoginResponse refreshToken(RefreshTokenRequest request) {
+        return authService.refreshToken(request);
+    }
 
     /**
-     * Blacklists the token associated with the incoming request.
+     * Blacklists a token to prevent further use.
      *
-     * @param request HttpServletRequest containing the token to be blacklisted.
-     * @return true if the token was successfully added to the blacklist; false otherwise.
+     * @param request HttpServletRequest containing the token to blacklist.
+     * @return true if token was successfully blacklisted, false otherwise.
      */
     public boolean blacklistToken(HttpServletRequest request) {
         return authService.blacklistToken(request);
     }
 
     /**
-     * Fetches the details of a user by their username.
-     * This method can be used to retrieve user-specific information, such as profile data, roles, and permissions.
+     * Retrieves user details by username.
      *
-     * @param username String - The username of the user whose details are to be fetched.
-     * @return UserResponse - Contains the user details, such as username, email, and other relevant information.
+     * @param username The username to look up.
+     * @return UserResponse with user details, or null if user not found.
      */
     public UserResponse getUserDetails(String username) {
         return authService.getUserDetails(username);
-    }}
+    }
+}

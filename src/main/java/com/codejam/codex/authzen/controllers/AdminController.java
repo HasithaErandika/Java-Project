@@ -11,7 +11,11 @@ import com.codejam.codex.authzen.endpoint.AdminEndpoint;
 import com.codejam.codex.authzen.endpoint.AuthEndpoint;
 import com.codejam.codex.authzen.responses.AuthzenResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.annotation.Secured;
@@ -30,6 +34,8 @@ import java.util.List;
 @PreAuthorize("hasRole('ADMIN')")
 public class AdminController {
 
+    private static final Logger logger = LoggerFactory.getLogger(AdminController.class);
+
     private final AdminEndpoint adminEndpoint;
     private final AuthEndpoint authEndpoint;
 
@@ -38,6 +44,7 @@ public class AdminController {
         this.adminEndpoint = adminEndpoint;
         this.authEndpoint = authEndpoint;
     }
+
     /**
      * Helper method that checks if the current request is from an authenticated admin.
      * If valid, returns the username wrapped in 200 OK; otherwise returns 401/403 with a message.
@@ -46,17 +53,26 @@ public class AdminController {
      * @return ResponseEntity with username in body if valid, or error message if unauthorized/forbidden
      */
     private String verifyAdmin(HttpServletRequest request) {
-        String username = authEndpoint.getUsername(request);
-        if (username == null || !authEndpoint.isAuthenticated(request)) {
-            throw new AccessDeniedException("Unauthorized: No token provided.");
-        }
+        try {
+            String username = authEndpoint.getUsername(request);
+            if (username == null || !authEndpoint.isAuthenticated(request)) {
+                logger.warn("Unauthorized access attempt by admin");
+                throw new AccessDeniedException("Unauthorized: No token provided.");
+            }
 
-        UserResponse userResponse = authEndpoint.getUserDetails(username);
-        if (userResponse == null || !userResponse.getRoles().contains("ROLE_ADMIN")) {
-            throw new AccessDeniedException("Forbidden: Insufficient permissions.");
-        }
+            UserResponse userResponse = authEndpoint.getUserDetails(username);
+            if (userResponse == null || !userResponse.getRoles().contains("ROLE_ADMIN")) {
+                logger.warn("Forbidden access attempt by non-admin user: {}", username);
+                throw new AccessDeniedException("Forbidden: Insufficient permissions.");
+            }
 
-        return username;
+            return username;
+        } catch (AccessDeniedException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error verifying admin access", e);
+            throw new AccessDeniedException("Error verifying admin access");
+        }
     }
 
     /**
@@ -70,11 +86,25 @@ public class AdminController {
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('VIEW_USER')")
     public ResponseEntity<AuthzenResponse<List<UserResponse>>> getAllUsers(HttpServletRequest request) {
-        String username = verifyAdmin(request);
-        List<UserResponse> users = adminEndpoint.getAllUsers(username);
-        AuthzenResponse<List<UserResponse>> response = new AuthzenResponse<>(users);
-        response.setMessage("Users listed successfully.");
-        return ResponseEntity.ok(response);
+        try {
+            String username = verifyAdmin(request);
+            List<UserResponse> users = adminEndpoint.getAllUsers(username);
+            if (users == null) {
+                logger.error("Failed to retrieve users list");
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new AuthzenResponse<>(null, false, "Failed to retrieve users list"));
+            }
+            AuthzenResponse<List<UserResponse>> response = new AuthzenResponse<>(users);
+            response.setMessage("Users listed successfully.");
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error retrieving users list", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while retrieving users list"));
+        }
     }
 
     /**
@@ -88,10 +118,25 @@ public class AdminController {
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('VIEW_USER')")
     public ResponseEntity<AuthzenResponse<UserResponse>> getUserDetails(@PathVariable("id") Long userId, HttpServletRequest request) {
-        UserResponse userResponse = adminEndpoint.getUserById(userId);
-        AuthzenResponse<UserResponse> response = new AuthzenResponse<>(userResponse);
-        response.setMessage("User details retrieved successfully.");
-        return ResponseEntity.ok(response);
+        try {
+            verifyAdmin(request);
+            UserResponse userResponse = adminEndpoint.getUserById(userId);
+            if (userResponse == null) {
+                logger.error("User not found with ID: {}", userId);
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new AuthzenResponse<>(null, false, "User not found"));
+            }
+            AuthzenResponse<UserResponse> response = new AuthzenResponse<>(userResponse);
+            response.setMessage("User details retrieved successfully.");
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error retrieving user details", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while retrieving user details"));
+        }
     }
 
     /**
@@ -107,13 +152,27 @@ public class AdminController {
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('UPDATE_USER')")
     public ResponseEntity<AuthzenResponse<UpdateUserResponse>> updateUserRole(@PathVariable("id") Long userId,
-                                                                              @RequestBody RoleUpdateRequest roleUpdateRequest,
+                                                                              @Valid @RequestBody RoleUpdateRequest roleUpdateRequest,
                                                                               HttpServletRequest request) {
-        String username = verifyAdmin(request);
-        UpdateUserResponse updated = adminEndpoint.updateUserRoles(userId, roleUpdateRequest, username);
-        AuthzenResponse<UpdateUserResponse> response = new AuthzenResponse<>(updated);
-        response.setMessage("User roles updated successfully");
-        return ResponseEntity.ok(response);
+        try {
+            String username = verifyAdmin(request);
+            UpdateUserResponse updated = adminEndpoint.updateUserRoles(userId, roleUpdateRequest, username);
+            if (updated == null) {
+                logger.error("Failed to update user roles for user ID: {}", userId);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new AuthzenResponse<>(null, false, "Failed to update user roles"));
+            }
+            AuthzenResponse<UpdateUserResponse> response = new AuthzenResponse<>(updated);
+            response.setMessage("User roles updated successfully");
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error updating user roles", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while updating user roles"));
+        }
     }
 
     /**
@@ -126,13 +185,22 @@ public class AdminController {
     @PostMapping(ApiEndpoint.ADMIN_ROLES)
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('CREATE_USER')")
-    public ResponseEntity<AuthzenResponse<String>> createRole(@RequestBody RoleRequest roleRequest,
+    public ResponseEntity<AuthzenResponse<String>> createRole(@Valid @RequestBody RoleRequest roleRequest,
                                              HttpServletRequest request) {
-        String username = verifyAdmin(request);
-        String created = adminEndpoint.createRole(roleRequest, username);
-        AuthzenResponse<String> response = new AuthzenResponse<>();
-        response.setMessage(created);
-        return ResponseEntity.ok(response);
+        try {
+            String username = verifyAdmin(request);
+            String created = adminEndpoint.createRole(roleRequest, username);
+            AuthzenResponse<String> response = new AuthzenResponse<>();
+            response.setMessage(created);
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error creating role", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while creating role"));
+        }
     }
 
     /**
@@ -145,11 +213,25 @@ public class AdminController {
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('VIEW_USER')")
     public ResponseEntity<AuthzenResponse<List<AuditLogResponse>>> getAuditLogs(HttpServletRequest request) {
-        String username = verifyAdmin(request);
-        List<AuditLogResponse> auditLogs = adminEndpoint.getAuditLogs(username);
-        AuthzenResponse<List<AuditLogResponse>> response = new AuthzenResponse<>(auditLogs);
-        response.setMessage("AuditLogs listed successfully.");
-        return ResponseEntity.ok(response);
+        try {
+            String username = verifyAdmin(request);
+            List<AuditLogResponse> auditLogs = adminEndpoint.getAuditLogs(username);
+            if (auditLogs == null) {
+                logger.error("Failed to retrieve audit logs");
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new AuthzenResponse<>(null, false, "Failed to retrieve audit logs"));
+            }
+            AuthzenResponse<List<AuditLogResponse>> response = new AuthzenResponse<>(auditLogs);
+            response.setMessage("AuditLogs listed successfully.");
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error retrieving audit logs", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while retrieving audit logs"));
+        }
     }
 
 
@@ -164,13 +246,22 @@ public class AdminController {
     @PostMapping(ApiEndpoint.ADMIN_DELEGATE)
     @Secured("ROLE_ADMIN")
     @PreAuthorize("hasAuthority('UPDATE_USER')")
-    public ResponseEntity<AuthzenResponse<String>> delegatePermissions(@RequestBody DelegateRequest delegateRequest,
+    public ResponseEntity<AuthzenResponse<String>> delegatePermissions(@Valid @RequestBody DelegateRequest delegateRequest,
                                                       HttpServletRequest request) {
-        String username = verifyAdmin(request);
-        String delegated = adminEndpoint.delegatePermissions(delegateRequest, username);
-        AuthzenResponse<String> response = new AuthzenResponse<>();
-        response.setMessage(delegated);
-        return ResponseEntity.ok(response);
+        try {
+            String username = verifyAdmin(request);
+            String delegated = adminEndpoint.delegatePermissions(delegateRequest, username);
+            AuthzenResponse<String> response = new AuthzenResponse<>();
+            response.setMessage(delegated);
+            return ResponseEntity.ok(response);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new AuthzenResponse<>(null, false, e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error delegating permissions", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthzenResponse<>(null, false, "An error occurred while delegating permissions"));
+        }
     }
 
 

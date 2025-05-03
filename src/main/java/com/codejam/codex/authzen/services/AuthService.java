@@ -1,6 +1,8 @@
 package com.codejam.codex.authzen.services;
 
 import com.codejam.codex.authzen.dtos.inputs.*;
+import com.codejam.codex.authzen.dtos.outputs.LoginResponse;
+import com.codejam.codex.authzen.dtos.outputs.RegisterResponse;
 import com.codejam.codex.authzen.dtos.outputs.TokenResponse;
 import com.codejam.codex.authzen.dtos.outputs.UserResponse;
 import com.codejam.codex.authzen.models.*;
@@ -47,6 +49,127 @@ public class AuthService {
         this.oAuthService = oAuthService;
         this.roleRepository = roleRepository;
         this.refreshTokenRepository = refreshTokenRepository;
+    }
+
+    /**
+     * Registers a new user.
+     *
+     * @param request The registration request containing user details.
+     * @return RegisterResponse with user details and verification status.
+     */
+    public RegisterResponse register(RegisterRequest request) {
+        UserResponse userResponse = registerUser(request);
+        return RegisterResponse.builder()
+                .id(userResponse.getId())
+                .username(userResponse.getUsername())
+                .email(userResponse.getEmail())
+                .emailVerified(false)
+                .roles(new ArrayList<>(userResponse.getRoles()))
+                .verificationToken(UUID.randomUUID().toString())
+                .message("Registration successful. Please verify your email.")
+                .build();
+    }
+
+    /**
+     * Authenticates a user and returns login response.
+     *
+     * @param request The login request containing user credentials.
+     * @return LoginResponse with tokens and user details, or null if authentication fails.
+     */
+    public LoginResponse login(LoginRequest request) {
+        TokenResponse tokenResponse = authenticateUser(request);
+        UserResponse userResponse = getUserDetails(request.getEmail());
+        return LoginResponse.builder()
+                .accessToken(tokenResponse.getAccessToken())
+                .refreshToken(tokenResponse.getRefreshToken())
+                .tokenType("Bearer")
+                .expiresIn(3600L)
+                .username(userResponse.getUsername())
+                .email(userResponse.getEmail())
+                .roles(new ArrayList<>(userResponse.getRoles()))
+                .permissions(new ArrayList<>(userResponse.getPermissions()))
+                .build();
+    }
+
+    /**
+     * Authenticates a user via OAuth and returns login response.
+     *
+     * @param provider The OAuth provider (e.g., "google", "github")
+     * @param code The authorization code from the OAuth provider
+     * @return LoginResponse with OAuth tokens and user details, or null if authentication fails.
+     */
+    public LoginResponse oauthLogin(String provider, String code) {
+        OAuthRequest oAuthRequest = new OAuthRequest();
+        oAuthRequest.setProvider(provider);
+        oAuthRequest.setOauthToken(code);
+        TokenResponse tokenResponse = authenticateOAuth(oAuthRequest);
+        
+        // Extract username from access token
+        String username = jwtService.extractUsername(tokenResponse.getAccessToken());
+        UserResponse userResponse = getUserDetails(username);
+        
+        return LoginResponse.builder()
+                .accessToken(tokenResponse.getAccessToken())
+                .refreshToken(tokenResponse.getRefreshToken())
+                .tokenType("Bearer")
+                .expiresIn(3600L)
+                .username(userResponse.getUsername())
+                .email(userResponse.getEmail())
+                .roles(new ArrayList<>(userResponse.getRoles()))
+                .permissions(new ArrayList<>(userResponse.getPermissions()))
+                .build();
+    }
+
+    /**
+     * Sends a password reset email to the user.
+     *
+     * @param email The user's email address.
+     * @return Success message if email was sent, error message otherwise.
+     */
+    public String requestPasswordReset(String email) {
+        ResetRequest resetRequest = new ResetRequest();
+        resetRequest.setEmail(email);
+        boolean success = sendPasswordResetEmail(resetRequest);
+        return success ? "Password reset email sent successfully" : "Failed to send password reset email";
+    }
+
+    /**
+     * Resets the user's password using a provided reset token.
+     *
+     * @param request The reset password request containing the token and new password.
+     * @return Success message if password was reset, error message otherwise.
+     */
+    public String resetPassword(PasswordResetRequest request) {
+        ResetPasswordRequest resetPasswordRequest = new ResetPasswordRequest();
+        resetPasswordRequest.setToken(request.getResetToken());
+        resetPasswordRequest.setNewPassword(request.getNewPassword());
+        boolean success = resetUserPassword(resetPasswordRequest);
+        return success ? "Password reset successful" : "Failed to reset password";
+    }
+
+    /**
+     * Refreshes access and refresh tokens using the provided refresh token.
+     *
+     * @param request The refresh token request containing the refresh token.
+     * @return LoginResponse with new tokens and user details, or null if refresh fails.
+     */
+    public LoginResponse refreshToken(RefreshTokenRequest request) {
+        TokenResponse tokenResponse = refreshToken(request.getRefreshToken());
+        
+        // Extract username from access token
+        String username = jwtService.extractUsername(tokenResponse.getAccessToken());
+        UserResponse userResponse = getUserDetails(username);
+        
+        return LoginResponse.builder()
+                .accessToken(tokenResponse.getAccessToken())
+                .refreshToken(tokenResponse.getRefreshToken())
+                .tokenType("Bearer")
+                .expiresIn(3600L)
+                .username(userResponse.getUsername())
+                .email(userResponse.getEmail())
+                .roles(new ArrayList<>(userResponse.getRoles()))
+                .permissions(new ArrayList<>(userResponse.getPermissions()))
+                .build();
     }
 
     /**
