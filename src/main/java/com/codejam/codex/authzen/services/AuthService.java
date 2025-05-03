@@ -18,6 +18,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class AuthService {
@@ -248,18 +249,29 @@ public class AuthService {
         user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
         user.setFailedLoginAttempts(0);
         user.setLastLoginAt(null);
-        user.setLastFailedLogin(null);
-        user.setPasswordChangedAt(new Timestamp(System.currentTimeMillis()));
-
+        
+        // Create UserRole mapping
         UserRole userRoleMapping = new UserRole();
         userRoleMapping.setUser(user);
         userRoleMapping.setRole(userRole);
         user.getUserRoles().add(userRoleMapping);
-
-        User savedUser = userRepository.save(user);
-        List<String> permissionNames = userRepository.findPermissionNamesByUsername(savedUser.getUsername());
-
-        return UserResponse.fromEntity(savedUser, permissionNames);
+        
+        // Save the user
+        user = userRepository.save(user);
+        
+        // Get permissions
+        List<String> permissionNames = userRepository.findPermissionNamesByUsername(user.getUsername());
+        
+        // Create and return UserResponse
+        return UserResponse.builder()
+                .id(user.getId())
+                .username(user.getUsername())
+                .email(user.getEmail())
+                .roles(user.getUserRoles().stream()
+                        .map(userRole1 -> userRole1.getRole().getName())
+                        .collect(Collectors.toSet()))
+                .permissions(permissionNames)
+                .build();
     }
 
     /**
@@ -269,55 +281,52 @@ public class AuthService {
      * @return Access token if authentication is successful, null otherwise.
      */
     public TokenResponse authenticateUser(LoginRequest request) {
-        Optional<User> userOptional = userRepository.findByEmail(request.getEmail());
-        if (userOptional.isPresent()) {
-            User user = userOptional.get();
+        try {
+            User user = userRepository.findByEmail(request.getEmail())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
             
-            // Check if account is locked
-            if (user.isLocked()) {
-                throw new RuntimeException("Account is locked. Please try again later.");
-            }
-            
-            // Check if account is active
-            if (!user.isActive()) {
-                throw new RuntimeException("Account is not active. Please contact support.");
-            }
-            
-            if (passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-                // Reset failed login attempts on successful login
-                user.setFailedLoginAttempts(0);
-                user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
-                userRepository.save(user);
-                
-                // Load user details using email consistently
-                UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
-                if (userResponse == null) {
-                    throw new RuntimeException("Failed to load user details");
-                }
-                
-                // Get permissions using the same identifier
-                List<String> permissionNames = userRepository.findPermissionNamesByUsername(user.getUsername());
-                userResponse.setPermissions(permissionNames);
-                
-                String accessToken = jwtService.generateAccessToken(userResponse);
-                String refreshToken = jwtService.generateRefreshToken(userResponse);
-                saveRefreshToken(user, refreshToken);
-                return new TokenResponse(accessToken, refreshToken);
-            } else {
-                // Increment failed login attempts
+            if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
                 user.setFailedLoginAttempts(user.getFailedLoginAttempts() + 1);
-                user.setLastFailedLogin(new Timestamp(System.currentTimeMillis()));
-                
-                // Check if account should be locked
                 if (user.getFailedLoginAttempts() >= 5) {
                     user.setLocked(true);
                 }
-                
                 userRepository.save(user);
                 throw new RuntimeException("Invalid password");
             }
+            
+            if (!user.isActive()) {
+                throw new RuntimeException("Account is not active");
+            }
+            
+            if (user.isLocked()) {
+                throw new RuntimeException("Account is locked");
+            }
+            
+            // Reset failed login attempts and update last login
+            user.setFailedLoginAttempts(0);
+            user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+            userRepository.save(user);
+            
+            // Get user details
+            UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
+            if (userResponse == null) {
+                throw new RuntimeException("Failed to load user details");
+            }
+            
+            // Generate tokens
+            String accessToken = jwtService.generateAccessToken(userResponse);
+            String refreshToken = jwtService.generateRefreshToken(userResponse);
+            
+            // Save refresh token
+            saveRefreshToken(user, refreshToken);
+            
+            return TokenResponse.builder()
+                    .accessToken(accessToken)
+                    .refreshToken(refreshToken)
+                    .build();
+        } catch (Exception e) {
+            return null;
         }
-        throw new RuntimeException("User not found with email: " + request.getEmail());
     }
 
     /**
@@ -327,47 +336,70 @@ public class AuthService {
      * @return OAuth token if successful, null otherwise.
      */
     public TokenResponse authenticateOAuth(OAuthRequest request) {
-        if ("github".equalsIgnoreCase(request.getProvider())) {
-            String oAuthAccessToken = oAuthService.getGithubAccessToken(request.getOauthToken());
-            Map<String, Object> githubUser = oAuthService.getGithubUser(oAuthAccessToken);
-
-            String githubId = githubUser.get("id").toString();
-            String githubEmail = (String) githubUser.get("email");
-            String githubLogin = (String) githubUser.get("login");
-
-            Optional<OauthProvider> providerOpt = oauthProviderRepository.findByProviderAndExternalUserId("github", githubId);
-            User user;
-            if (providerOpt.isPresent()) {
-                user = providerOpt.get().getUser();
+        try {
+            // Get user info from OAuth provider
+            UserResponse userInfo;
+            if ("github".equalsIgnoreCase(request.getProvider())) {
+                String oAuthAccessToken = oAuthService.getGithubAccessToken(request.getOauthToken());
+                Map<String, Object> githubUser = oAuthService.getGithubUser(oAuthAccessToken);
+                
+                userInfo = UserResponse.builder()
+                        .username((String) githubUser.get("login"))
+                        .email((String) githubUser.get("email"))
+                        .build();
             } else {
-                Optional<User> existingUserOpt = userRepository.findByEmail(githubEmail);
-                if (existingUserOpt.isPresent()) {
-                    user = existingUserOpt.get();
-                } else {
-                    user = User.builder()
-                            .username(githubLogin)
-                            .email(githubEmail)
-                            .isActive(true)
-                            .isLocked(false)
-                            .userRoles(new HashSet<>())
-                            .build();
-                    user = userRepository.save(user);
-                }
-                oauthProviderRepository.save(OauthProvider.builder()
-                        .provider("github")
-                        .externalUserId(githubId)
-                        .user(user)
-                        .build());
+                throw new RuntimeException("Unsupported OAuth provider: " + request.getProvider());
             }
-
+            
+            if (userInfo == null) {
+                throw new RuntimeException("Failed to get user info from OAuth provider");
+            }
+            
+            // Find or create user
+            User user = userRepository.findByEmail(userInfo.getEmail())
+                    .orElseGet(() -> {
+                        User newUser = new User();
+                        newUser.setUsername(userInfo.getUsername());
+                        newUser.setEmail(userInfo.getEmail());
+                        newUser.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
+                        newUser.setActive(true);
+                        newUser.setLocked(false);
+                        newUser.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+                        newUser.setFailedLoginAttempts(0);
+                        newUser.setLastLoginAt(null);
+                        
+                        // Set default role
+                        List<Role> roles = roleRepository.findByName("ROLE_USER");
+                        if (!roles.isEmpty()) {
+                            UserRole userRoleMapping = new UserRole();
+                            userRoleMapping.setUser(newUser);
+                            userRoleMapping.setRole(roles.get(0));
+                            newUser.getUserRoles().add(userRoleMapping);
+                        }
+                        
+                        return userRepository.save(newUser);
+                    });
+            
+            // Get user details
             UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
+            if (userResponse == null) {
+                throw new RuntimeException("Failed to load user details");
+            }
+            
+            // Generate tokens
             String accessToken = jwtService.generateAccessToken(userResponse);
             String refreshToken = jwtService.generateRefreshToken(userResponse);
-
-            return new TokenResponse(accessToken, refreshToken);
+            
+            // Save refresh token
+            saveRefreshToken(user, refreshToken);
+            
+            return TokenResponse.builder()
+                    .accessToken(accessToken)
+                    .refreshToken(refreshToken)
+                    .build();
+        } catch (Exception e) {
+            return null;
         }
-
-        return null;
     }
 
     /**

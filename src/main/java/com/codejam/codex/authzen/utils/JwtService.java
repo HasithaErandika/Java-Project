@@ -56,8 +56,11 @@ public class JwtService {
 
     public boolean isTokenValid(String token) {
         try {
-            extractAllClaims(token);
-            return true;
+            if (isTokenBlacklisted(token)) {
+                return false;
+            }
+            Claims claims = extractAllClaims(token);
+            return !isTokenExpired(token);
         } catch (JwtException | IllegalArgumentException e) {
             return false;
         }
@@ -100,8 +103,16 @@ public class JwtService {
     }
 
     public List<String> extractPermissions(String token) {
-        Claims claims = extractAllClaims(token);
-        return (List<String>) claims.get("permissions");
+        try {
+            Claims claims = extractAllClaims(token);
+            Object permissionsObj = claims.get("permissions");
+            if (permissionsObj instanceof List) {
+                return (List<String>) permissionsObj;
+            }
+            return new ArrayList<>();
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
     }
 
     public boolean isTokenBlacklisted(String token) {

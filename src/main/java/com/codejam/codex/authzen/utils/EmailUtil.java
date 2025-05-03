@@ -29,6 +29,9 @@ public class EmailUtil {
      * @return true if email is sent successfully, false otherwise.
      */
     public boolean sendPasswordResetEmail(String toEmail, String subject, String body, String resetLink) {
+        if (toEmail == null || subject == null || body == null || resetLink == null) {
+            return false;
+        }
         String formattedBody = body.replace("${RESET_LINK}", resetLink);
         try {
             SimpleMailMessage message = new SimpleMailMessage();
@@ -54,6 +57,9 @@ public class EmailUtil {
      * @return true if email is sent successfully, false otherwise.
      */
     public boolean sendPasswordResetEmailHtml(String toEmail, String subject, String body, String resetLink) {
+        if (toEmail == null || subject == null || body == null || resetLink == null) {
+            return false;
+        }
         String formattedBody = body.replace("${RESET_LINK}", resetLink);
         try {
             MimeMessage mimeMessage = javaMailSender.createMimeMessage();
