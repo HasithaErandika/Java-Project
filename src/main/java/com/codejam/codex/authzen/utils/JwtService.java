@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class JwtService {
@@ -23,12 +24,15 @@ public class JwtService {
     @Value("${jwt.refresh-token.expiry-ms}")
     private long refreshTokenExpiry;
 
-    private final Set<String> blacklistedTokens = new HashSet<>();
+    private final Map<String, String> blacklistedTokens = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void validateSecretLength() {
+        if (jwtSecret == null || jwtSecret.trim().isEmpty()) {
+            throw new IllegalStateException("JWT secret key must not be null or empty");
+        }
         if (jwtSecret.getBytes(StandardCharsets.UTF_8).length < 32) {
-            throw new IllegalStateException("JWT secret key must be at least 32 bytes (256 bits) long.");
+            throw new IllegalStateException("JWT secret key must be at least 32 bytes (256 bits) long");
         }
     }
 
@@ -37,19 +41,33 @@ public class JwtService {
     }
 
     public String extractUsername(String token) {
-        return extractClaim(token, Claims::getSubject);
+        try {
+            return extractClaim(token, Claims::getSubject);
+        } catch (JwtException | IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public Date extractExpiration(String token) {
-        return extractClaim(token, Claims::getExpiration);
+        try {
+            return extractClaim(token, Claims::getExpiration);
+        } catch (JwtException | IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public <T> T extractClaim(String token, java.util.function.Function<Claims, T> resolver) {
+        if (token == null || token.trim().isEmpty()) {
+            throw new IllegalArgumentException("Token cannot be null or empty");
+        }
         Claims claims = extractAllClaims(token);
         return resolver.apply(claims);
     }
 
     public boolean isTokenValid(String token, UserResponse userDetails) {
+        if (token == null || userDetails == null) {
+            return false;
+        }
         try {
             if (isTokenBlacklisted(token)) {
                 return false;
@@ -62,34 +80,51 @@ public class JwtService {
     }
 
     public boolean isTokenValid(String token) {
+        if (token == null) {
+            return false;
+        }
         try {
             if (isTokenBlacklisted(token)) {
                 return false;
             }
             Claims claims = extractAllClaims(token);
-            return !isTokenExpired(token);
+            return claims != null && !isTokenExpired(token);
         } catch (JwtException | IllegalArgumentException e) {
             return false;
         }
     }
 
     public String generateAccessToken(UserResponse userResponse) {
+        if (userResponse == null) {
+            throw new IllegalArgumentException("User response cannot be null");
+        }
         Map<String, Object> claims = new HashMap<>();
         claims.put("userId", userResponse.getId());
         claims.put("username", userResponse.getUsername());
         claims.put("roles", userResponse.getRoles());
         claims.put("permissions", userResponse.getPermissions());
+        claims.put("type", "access");
         return buildToken(claims, userResponse.getUsername(), accessTokenExpiry);
     }
 
     public String generateRefreshToken(UserResponse userDetails) {
+        if (userDetails == null) {
+            throw new IllegalArgumentException("User details cannot be null");
+        }
         Map<String, Object> claims = new HashMap<>();
         claims.put("userId", userDetails.getId());
         claims.put("username", userDetails.getUsername());
+        claims.put("type", "refresh");
         return buildToken(claims, userDetails.getUsername(), refreshTokenExpiry);
     }
 
     private String buildToken(Map<String, Object> claims, String subject, long expiry) {
+        if (subject == null || subject.trim().isEmpty()) {
+            throw new IllegalArgumentException("Subject cannot be null or empty");
+        }
+        if (expiry <= 0) {
+            throw new IllegalArgumentException("Expiry must be positive");
+        }
         return Jwts.builder()
                 .setClaims(claims)
                 .setSubject(subject)
@@ -101,13 +136,17 @@ public class JwtService {
 
     boolean isTokenExpired(String token) {
         try {
-            return extractExpiration(token).before(new Date());
+            Date expiration = extractExpiration(token);
+            return expiration == null || expiration.before(new Date());
         } catch (JwtException | IllegalArgumentException e) {
             return true;
         }
     }
 
     private Claims extractAllClaims(String token) {
+        if (token == null || token.trim().isEmpty()) {
+            throw new IllegalArgumentException("Token cannot be null or empty");
+        }
         return Jwts.parserBuilder()
                 .setSigningKey(getSigningKey())
                 .setAllowedClockSkewSeconds(2)
@@ -130,12 +169,24 @@ public class JwtService {
     }
 
     public boolean isTokenBlacklisted(String token) {
-        return token != null && blacklistedTokens.contains(token);
+        return token != null && blacklistedTokens.containsKey(token);
     }
 
     public void blacklistToken(String token) {
-        if (token != null) {
-            blacklistedTokens.add(token);
+        if (token != null && !token.trim().isEmpty()) {
+            blacklistedTokens.put(token, new Date().toString());
         }
+    }
+
+    public void removeExpiredBlacklistedTokens() {
+        Date now = new Date();
+        blacklistedTokens.entrySet().removeIf(entry -> {
+            try {
+                Date expiration = extractExpiration(entry.getKey());
+                return expiration != null && expiration.before(now);
+            } catch (JwtException | IllegalArgumentException e) {
+                return true;
+            }
+        });
     }
 }
