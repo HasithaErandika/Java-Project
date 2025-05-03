@@ -17,7 +17,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
-
 @Service
 public class AuthService {
 
@@ -35,7 +34,9 @@ public class AuthService {
 
     @Autowired
     public AuthService(JwtService jwtService, UserService userService, UserRepository userRepository,
-                       BCryptPasswordEncoder passwordEncoder, EmailUtil emailUtil, EmailTokenRepository emailTokenRepository, OauthProviderRepository oauthProviderRepository, OAuthService oAuthService, RoleRepository roleRepository, RefreshTokenRepository refreshTokenRepository) {
+                      BCryptPasswordEncoder passwordEncoder, EmailUtil emailUtil, EmailTokenRepository emailTokenRepository, 
+                      OauthProviderRepository oauthProviderRepository, OAuthService oAuthService, 
+                      RoleRepository roleRepository, RefreshTokenRepository refreshTokenRepository) {
         this.jwtService = jwtService;
         this.userService = userService;
         this.userRepository = userRepository;
@@ -55,6 +56,13 @@ public class AuthService {
      * @return true if registration was successful, false otherwise.
      */
     public UserResponse registerUser(RegisterRequest request) {
+        // Check if username or email already exists
+        if (userRepository.existsByUsername(request.getUsername())) {
+            throw new RuntimeException("Username already exists");
+        }
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new RuntimeException("Email already exists");
+        }
 
         List<Role> roles = roleRepository.findByName("ROLE_USER");
         if (roles.isEmpty()) {
@@ -67,19 +75,23 @@ public class AuthService {
         user.setEmail(request.getEmail());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setActive(true);
-        user.setCreatedAt(new java.sql.Timestamp(System.currentTimeMillis()));
+        user.setLocked(false);
+        user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+        user.setFailedLoginAttempts(0);
+        user.setLastLoginAt(null);
+        user.setLastFailedLogin(null);
+        user.setPasswordChangedAt(new Timestamp(System.currentTimeMillis()));
 
         UserRole userRoleMapping = new UserRole();
-        userRoleMapping.setUser(new User());
+        userRoleMapping.setUser(user);
         userRoleMapping.setRole(userRole);
         user.getUserRoles().add(userRoleMapping);
 
-        userRepository.save(new User());
-        List<String> permissionNames = new ArrayList<>();
+        User savedUser = userRepository.save(user);
+        List<String> permissionNames = userRepository.findPermissionNamesByUsername(savedUser.getUsername());
 
-        return UserResponse.fromEntity(new User(), permissionNames);
+        return UserResponse.fromEntity(savedUser, permissionNames);
     }
-
 
     /**
      * Authenticates a user and issues an access token.
@@ -91,17 +103,52 @@ public class AuthService {
         Optional<User> userOptional = userRepository.findByEmail(request.getEmail());
         if (userOptional.isPresent()) {
             User user = userOptional.get();
-            if (request.getPassword().equals(user.getPassword())) {
+            
+            // Check if account is locked
+            if (user.isLocked()) {
+                throw new RuntimeException("Account is locked. Please try again later.");
+            }
+            
+            // Check if account is active
+            if (!user.isActive()) {
+                throw new RuntimeException("Account is not active. Please contact support.");
+            }
+            
+            if (passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+                // Reset failed login attempts on successful login
+                user.setFailedLoginAttempts(0);
+                user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+                userRepository.save(user);
+                
+                // Load user details using email consistently
                 UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
+                if (userResponse == null) {
+                    throw new RuntimeException("Failed to load user details");
+                }
+                
+                // Get permissions using the same identifier
                 List<String> permissionNames = userRepository.findPermissionNamesByUsername(user.getUsername());
                 userResponse.setPermissions(permissionNames);
+                
                 String accessToken = jwtService.generateAccessToken(userResponse);
                 String refreshToken = jwtService.generateRefreshToken(userResponse);
                 saveRefreshToken(user, refreshToken);
                 return new TokenResponse(accessToken, refreshToken);
+            } else {
+                // Increment failed login attempts
+                user.setFailedLoginAttempts(user.getFailedLoginAttempts() + 1);
+                user.setLastFailedLogin(new Timestamp(System.currentTimeMillis()));
+                
+                // Check if account should be locked
+                if (user.getFailedLoginAttempts() >= 5) {
+                    user.setLocked(true);
+                }
+                
+                userRepository.save(user);
+                throw new RuntimeException("Invalid password");
             }
         }
-        return null;
+        throw new RuntimeException("User not found with email: " + request.getEmail());
     }
 
     /**
@@ -154,7 +201,6 @@ public class AuthService {
         return null;
     }
 
-
     /**
      * Sends a password reset email to the user.
      *
@@ -184,7 +230,6 @@ public class AuthService {
         }
         return false;
     }
-
 
     /**
      * Resets the user's password using the provided token.
@@ -232,13 +277,21 @@ public class AuthService {
      */
     public boolean isAuthenticated(HttpServletRequest request) {
         final String token = extractTokenFromHeader(request);
-        if ((token == null || !jwtService.isTokenValid(token)) && isBlacklisted(token) ) {
+        if (token == null || isBlacklisted(token)) {
+            return false;
+        }
+        
+        if (!jwtService.isTokenValid(token)) {
             return false;
         }
 
         final String username = jwtService.extractUsername(token);
+        if (username == null) {
+            return false;
+        }
+        
         UserResponse userDetails = userService.loadUserByUsername(username);
-        return jwtService.isTokenValid(token, userDetails);
+        return userDetails != null && jwtService.isTokenValid(token, userDetails);
     }
 
     /**
@@ -263,7 +316,7 @@ public class AuthService {
      */
     public String getUsername(HttpServletRequest request) {
         final String token = extractTokenFromHeader(request);
-        if ((token == null || !jwtService.isTokenValid(token)) && isBlacklisted(token) ) {
+        if (token == null || isBlacklisted(token)) {
             return null;
         }
         return jwtService.extractUsername(token);
@@ -290,14 +343,10 @@ public class AuthService {
      * @param token The refresh token to be saved.
      */
     private void saveRefreshToken(User user, String token) {
-
-        RefreshToken refreshToken = RefreshToken.builder()
-                .user(user)
-                .token(token)
-                .revoked(false)
-                .expiresAt(Timestamp.from(Instant.now().plus(7, ChronoUnit.DAYS)))
-                .build();
-
+        RefreshToken refreshToken = new RefreshToken();
+        refreshToken.setUser(user);
+        refreshToken.setToken(token);
+        refreshToken.setExpiresAt(Timestamp.from(Instant.now().plus(7, ChronoUnit.DAYS)));
         refreshTokenRepository.save(refreshToken);
     }
 
@@ -309,30 +358,52 @@ public class AuthService {
      * @throws RuntimeException if the refresh token is expired or invalid.
      */
     public TokenResponse refreshToken(String refreshToken) {
-
-        RefreshToken tokenRecord = refreshTokenRepository.findByToken(refreshToken)
-                .orElseThrow(() -> new RuntimeException("Refresh token not found"));
-
-        if (tokenRecord.isRevoked() || tokenRecord.getExpiresAt().before(new Timestamp(System.currentTimeMillis()))) {
-            throw new RuntimeException("Refresh token is expired or revoked");
+        if (refreshToken == null || refreshToken.isEmpty()) {
+            throw new RuntimeException("Refresh token is required");
         }
 
+        // Validate token format and signature
         if (!jwtService.isTokenValid(refreshToken)) {
-            throw new RuntimeException("Invalid refresh token");
+            throw new RuntimeException("Invalid refresh token format or signature");
         }
 
-        String username = jwtService.extractUsername(refreshToken);
-        User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        Optional<RefreshToken> tokenOptional = refreshTokenRepository.findByToken(refreshToken);
+        if (tokenOptional.isEmpty()) {
+            throw new RuntimeException("Refresh token not found in database");
+        }
+
+        RefreshToken token = tokenOptional.get();
+        if (token.getExpiresAt().before(Timestamp.from(Instant.now()))) {
+            refreshTokenRepository.delete(token);
+            throw new RuntimeException("Refresh token has expired");
+        }
+
+        User user = token.getUser();
+        if (!user.isActive()) {
+            throw new RuntimeException("User account is not active");
+        }
+
+        if (user.isLocked()) {
+            throw new RuntimeException("User account is locked");
+        }
+
+        UserResponse userResponse = userService.loadUserByUsername(user.getEmail());
+        if (userResponse == null) {
+            throw new RuntimeException("Failed to load user details");
+        }
 
         List<String> permissionNames = userRepository.findPermissionNamesByUsername(user.getUsername());
+        userResponse.setPermissions(permissionNames);
 
-        UserResponse userDetails = UserResponse.fromEntity(user, permissionNames);
+        String newAccessToken = jwtService.generateAccessToken(userResponse);
+        String newRefreshToken = jwtService.generateRefreshToken(userResponse);
 
-        String newAccessToken = jwtService.generateAccessToken(userDetails);
-        String newRefreshToken = jwtService.generateRefreshToken(userDetails);
+        // Delete old refresh token
+        refreshTokenRepository.delete(token);
+        // Save new refresh token
+        saveRefreshToken(user, newRefreshToken);
 
-        return TokenResponse.builder().accessToken(newAccessToken).refreshToken(newRefreshToken).build();
+        return new TokenResponse(newAccessToken, newRefreshToken);
     }
 
     /**
@@ -343,17 +414,21 @@ public class AuthService {
      *         or already blacklisted.
      */
     public boolean blacklistToken(HttpServletRequest request) {
-        String token = extractTokenFromHeader(request);
-        if (token == null || !jwtService.isTokenValid(token)) {
+        final String token = extractTokenFromHeader(request);
+        if (token == null) {
             return false;
         }
 
-        if (isBlacklisted(token)) {
+        // Validate token before blacklisting
+        if (!jwtService.isTokenValid(token)) {
             return false;
         }
 
-        blacklistedTokens.add(token);
-        return true;
+        if (!isBlacklisted(token)) {
+            blacklistedTokens.add(token);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -363,8 +438,6 @@ public class AuthService {
      * @return true if the token is blacklisted, false otherwise.
      */
     public boolean isBlacklisted(String token) {
-        return blacklistedTokens.contains(token);
+        return token != null && blacklistedTokens.contains(token);
     }
-
-
 }

@@ -20,7 +20,10 @@ import java.util.Set;
 @Builder
 @Entity
 @ToString
-@Table(name = "users")
+@Table(name = "users", uniqueConstraints = {
+    @UniqueConstraint(columnNames = "username"),
+    @UniqueConstraint(columnNames = "email")
+})
 public class User {
 
     @Id
@@ -40,6 +43,8 @@ public class User {
 
     @NotBlank(message = "Password is required")
     @Size(min = 8, message = "Password must be at least 8 characters long")
+    @Pattern(regexp = "^(?=.*[0-9])(?=.*[a-z])(?=.*[A-Z])(?=.*[@#$%^&+=])(?=\\S+$).{8,}$", 
+            message = "Password must contain at least one digit, one lowercase letter, one uppercase letter, and one special character")
     @Column(nullable = false, name = "password")
     private String password;
 
@@ -121,5 +126,6 @@ public class User {
     }
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
     private Set<UserRole> userRoles = new HashSet<>();
 }

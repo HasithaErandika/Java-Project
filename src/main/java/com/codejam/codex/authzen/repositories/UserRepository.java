@@ -17,6 +17,10 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     Optional<User> findByUsernameOrEmail(String username, String email);
 
+    boolean existsByUsername(String username);
+
+    boolean existsByEmail(String email);
+
     @Query("SELECT DISTINCT p.name FROM User u " +
             "JOIN u.userRoles ur " +
             "JOIN ur.role r " +
